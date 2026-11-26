@@ -1,6 +1,6 @@
-import { createClient } from '/lib/@supabase/supabase-js@2.49.4/index.esm.js';
-import { SUPABASE_URL, SUPABASE_KEY } from '/js/config.js';
-import { entrarAutomatico, entrarComSenha, esqueciSenha, sairDeTudo, CENTRAL } from '/modulos/nr-login-central.js';
+import { createClient } from '../lib/@supabase/supabase-js@2.49.4/index.esm.js';
+import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
+import { entrarAutomatico, entrarComSenha, esqueciSenha, sairDeTudo, CENTRAL } from '../modulos/nr-login-central.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY);            // Supabase do Timesheet
 const central = createClient(CENTRAL.url, CENTRAL.chave);        // Login central (hub/POB)
