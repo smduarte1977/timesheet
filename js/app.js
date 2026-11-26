@@ -174,8 +174,8 @@ function tabela(cols, linhas) {
 }
 const td = (s) => `<td style="padding:10px 12px;border-top:1px solid var(--line)">${esc(s)}</td>`;
 
-function selEmpresa(id) {
-  return `<select id="f-empresa">${estado.empresas.map((e) => `<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select>`;
+function selEmpresa(id = 'f-empresa') {
+  return `<select id="${id}">${estado.empresas.map((e) => `<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select>`;
 }
 
 /* Empresas */
@@ -216,13 +216,20 @@ async function cadColaboradores(corpo) {
         <button class="btn g" id="f-salvar">Salvar</button>
       </div><p id="f-erro" class="lbl" style="color:#ff8a83;display:none;margin:10px 0 0"></p>
     </div>
-    <div class="card" style="margin-bottom:16px"><h3 style="font-size:20px;margin-bottom:8px">Importar por CSV</h3>
-      <p class="lbl" style="text-transform:none;letter-spacing:0;color:var(--text-muted);margin:0 0 10px">Colunas: <span class="mono">matricula,nome,cargo,ambiente,embarca</span> (ambiente = onshore/offshore; embarca = sim/nao).</p>
-      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Empresa dos dados${selEmpresa()}</label>
-        <input type="file" id="f-csv" accept=".csv,text/csv">
-        <button class="btn" id="f-baixar">Baixar modelo CSV</button>
-      </div><p id="csv-msg" class="lbl" style="text-transform:none;letter-spacing:0;display:none;margin:10px 0 0"></p>
+    <div class="card" style="margin-bottom:16px"><h3 style="font-size:20px;margin-bottom:8px">Importar dados</h3>
+      <p class="lbl" style="text-transform:none;letter-spacing:0;color:var(--text-muted);margin:0 0 10px">Envie a planilha (Excel ou CSV) ou cole as linhas copiadas do Excel/Google Sheets. O sistema reconhece as colunas sozinho e mostra uma prévia antes de gravar.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Empresa dos dados${selEmpresa('imp-empresa')}</label>
+        <label class="btn" style="display:inline-flex;align-items:center;cursor:pointer">Escolher planilha<input type="file" id="imp-arquivo" accept=".xlsx,.xls,.csv,.txt" style="display:none"></label>
+        <button class="btn" id="imp-colar-btn">Colar dados</button>
+        <button class="btn" id="f-baixar">Baixar modelo</button>
+      </div>
+      <div id="imp-colar" style="display:none;margin-top:12px">
+        <textarea id="imp-texto" rows="6" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--text);padding:10px;font:400 13px var(--font-mono)" placeholder="Cole aqui (Ctrl+V) as linhas da planilha, de preferência com o cabeçalho"></textarea>
+        <button class="btn p" id="imp-ler" style="margin-top:8px">Ler dados colados</button>
+      </div>
+      <p id="csv-msg" class="lbl" style="text-transform:none;letter-spacing:0;display:none;margin:10px 0 0"></p>
+      <div id="imp-previa" style="margin-top:12px"></div>
     </div>
     ${tabela(['Matrícula', 'Nome', 'Cargo', 'Ambiente', 'Empresa'], linhas)}`;
   $('f-salvar').onclick = async () => {
@@ -233,38 +240,151 @@ async function cadColaboradores(corpo) {
     estado.msg = 'Colaborador cadastrado.'; renderCadastros();
   };
   $('f-baixar').onclick = baixarModelo;
-  $('f-csv').onchange = (e) => importarCsv(e.target.files[0]);
+  $('imp-arquivo').onchange = (e) => lerArquivo(e.target.files[0]);
+  $('imp-colar-btn').onclick = () => { const b = $('imp-colar'); b.style.display = b.style.display === 'none' ? 'block' : 'none'; if (b.style.display === 'block') $('imp-texto').focus(); };
+  $('imp-ler').onclick = () => { const t = $('imp-texto').value; if (!t.trim()) return impMsg('Cole as linhas da planilha primeiro.', true); prepararImportacao(lerTexto(t)); };
 }
 
 function baixarModelo() {
-  const csv = 'matricula,nome,cargo,ambiente,embarca\n1001,Nome Exemplo,Marinheiro,offshore,nao\n';
+  const csv = 'Matrícula;Nome;Cargo;Ambiente;Embarca\n1001;Nome Exemplo;Marinheiro;Offshore;Sim\n';
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
   a.download = 'modelo-colaboradores.csv'; a.click();
 }
 
-async function importarCsv(file) {
+/* ---------- Importação inteligente (Excel, CSV ou colado) ---------- */
+
+const CAMPOS = [
+  ['matricula', 'Matrícula', ['matricula', 'matr', 'mat', 'registro', 'chapa', 're', 'codigo', 'cod', 'cracha', 'idfuncionario', 'numero']],
+  ['nome', 'Nome', ['nome', 'nomecompleto', 'colaborador', 'funcionario', 'empregado', 'tripulante', 'name', 'pessoa', 'trabalhador']],
+  ['cargo', 'Cargo', ['cargo', 'funcao', 'ocupacao', 'posicao', 'role', 'function', 'atividade']],
+  ['ambiente', 'Ambiente', ['ambiente', 'regime', 'onshoreoffshore', 'onoff', 'localtrabalho']],
+  ['embarca', 'Embarca', ['embarca', 'embarcado', 'embarque', 'aBordo', 'abordo']],
+];
+let imp = null; // { linhas, cabecalho, mapa }
+
+const norm = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function impMsg(txt, erro) { const m = $('csv-msg'); if (!m) return; m.style.display = 'block'; m.style.color = erro ? '#ff8a83' : 'var(--text-muted)'; m.textContent = txt; }
+
+function lerTexto(txt) {
+  const linhas = txt.replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (!linhas.length) return [];
+  const amostra = linhas[0];
+  const sep = (amostra.match(/\t/g) || []).length ? '\t' : (amostra.match(/;/g) || []).length >= (amostra.match(/,/g) || []).length ? ';' : ',';
+  return linhas.map((l) => {
+    const out = []; let cur = '', q = false;
+    for (let i = 0; i < l.length; i++) {
+      const ch = l[i];
+      if (ch === '"') { if (q && l[i + 1] === '"') { cur += '"'; i++; } else q = !q; }
+      else if (ch === sep && !q) { out.push(cur.trim()); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur.trim());
+    return out;
+  });
+}
+
+async function lerArquivo(file) {
   if (!file) return;
-  const msg = $('csv-msg'); msg.style.display = 'block'; msg.style.color = 'var(--text-muted)'; msg.textContent = 'Lendo arquivo…';
-  const empresa_id = $('f-empresa').value;
-  const texto = await file.text();
-  const linhas = texto.split(/\r?\n/).filter((l) => l.trim());
-  if (!linhas.length) { msg.textContent = 'Arquivo vazio.'; return; }
-  const head = linhas[0].toLowerCase().split(',').map((s) => s.trim());
-  const col = (n) => head.indexOf(n);
-  if (col('matricula') < 0 || col('nome') < 0) { msg.style.color = '#ff8a83'; msg.textContent = 'O CSV precisa ter as colunas matricula e nome.'; return; }
-  const regs = [];
-  for (let i = 1; i < linhas.length; i++) {
-    const p = linhas[i].split(',').map((s) => s.trim());
-    if (!p[col('matricula')] || !p[col('nome')]) continue;
-    const amb = (col('ambiente') >= 0 ? p[col('ambiente')] : 'onshore').toLowerCase();
-    const emb = (col('embarca') >= 0 ? p[col('embarca')] : '').toLowerCase();
-    regs.push({ empresa_id, matricula: p[col('matricula')], nome: p[col('nome')], cargo: col('cargo') >= 0 ? (p[col('cargo')] || null) : null, ambiente: amb === 'offshore' ? 'offshore' : 'onshore', embarca: ['sim', 's', 'true', '1'].includes(emb) });
+  impMsg('Lendo ' + file.name + '…');
+  try {
+    let linhas;
+    if (/\.(csv|txt)$/i.test(file.name)) {
+      linhas = lerTexto(await file.text());
+    } else {
+      if (!window.XLSX) return impMsg('Leitor de Excel não carregou. Recarregue a página.', true);
+      const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      linhas = window.XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }).map((r) => r.map((c) => String(c ?? '').trim()));
+    }
+    prepararImportacao(linhas.filter((r) => r.some((c) => c !== '')));
+  } catch (e) {
+    impMsg('Não foi possível ler o arquivo: ' + (e.message || e), true);
   }
-  if (!regs.length) { msg.style.color = '#ff8a83'; msg.textContent = 'Nenhuma linha válida encontrada.'; return; }
-  msg.textContent = `Importando ${regs.length} colaboradores…`;
-  const { error } = await sb.from('colaboradores').upsert(regs, { onConflict: 'empresa_id,matricula' });
-  if (error) { msg.style.color = '#ff8a83'; msg.textContent = 'Erro ao importar: ' + error.message; return; }
+}
+
+function detectar(linhas) {
+  // Procura a linha de cabeçalho nas 10 primeiras: a que mais bate com os nomes conhecidos.
+  let melhor = -1, pontos = 0;
+  linhas.slice(0, 10).forEach((r, i) => {
+    const p = r.reduce((s, c) => s + (CAMPOS.some(([, , sin]) => sin.some((x) => norm(c) === norm(x) || (norm(x).length > 3 && norm(c).startsWith(norm(x))))) ? 1 : 0), 0);
+    if (p > pontos) { pontos = p; melhor = i; }
+  });
+  const ncol = Math.max(...linhas.map((r) => r.length));
+  const cabecalho = melhor >= 0 ? linhas[melhor].map((c, i) => c || `Coluna ${i + 1}`) : Array.from({ length: ncol }, (_, i) => `Coluna ${i + 1}`);
+  const dados = linhas.slice(melhor + 1);
+  const mapa = {};
+  for (const [campo, , sin] of CAMPOS) {
+    const i = cabecalho.findIndex((c, j) => !Object.values(mapa).includes(j) && sin.some((x) => norm(c) === norm(x) || (norm(x).length > 3 && norm(c).startsWith(norm(x)))));
+    mapa[campo] = i;
+  }
+  // Sem cabeçalho reconhecido: matrícula = coluna mais numérica; nome = coluna com mais texto com espaço.
+  if (mapa.matricula < 0 || mapa.nome < 0) {
+    const amostra = dados.slice(0, 30);
+    const score = (j, f) => amostra.filter((r) => f(String(r[j] || ''))).length;
+    const cols = Array.from({ length: ncol }, (_, j) => j);
+    if (mapa.matricula < 0) { const j = cols.sort((a, b) => score(b, (v) => /^\d{1,12}$/.test(v)) - score(a, (v) => /^\d{1,12}$/.test(v)))[0]; if (score(j, (v) => /^\d{1,12}$/.test(v)) > 0) mapa.matricula = j; }
+    if (mapa.nome < 0) { const j = cols.filter((c) => c !== mapa.matricula).sort((a, b) => score(b, (v) => /[a-zA-ZÀ-ú]+\s+[a-zA-ZÀ-ú]+/.test(v)) - score(a, (v) => /[a-zA-ZÀ-ú]+\s+[a-zA-ZÀ-ú]+/.test(v)))[0]; if (j !== undefined) mapa.nome = j; }
+  }
+  return { cabecalho, dados, mapa };
+}
+
+function prepararImportacao(linhas) {
+  if (!linhas.length) return impMsg('Nenhuma linha encontrada.', true);
+  imp = detectar(linhas);
+  impMsg(`${imp.dados.length} linhas lidas. Confira as colunas abaixo e clique em Importar.`);
+  desenharPrevia();
+}
+
+function registrosImportacao() {
+  const empresa = estado.empresas.find((e) => e.id === $('imp-empresa').value);
+  const padraoAmb = empresa && empresa.ambiente === 'offshore' ? 'offshore' : 'onshore';
+  const pega = (r, campo) => (imp.mapa[campo] >= 0 ? String(r[imp.mapa[campo]] ?? '').trim() : '');
+  const porMat = new Map();
+  for (const r of imp.dados) {
+    let matricula = pega(r, 'matricula').replace(/\.0+$/, '');
+    const nome = pega(r, 'nome');
+    if (!matricula || nome.length < 2) continue;
+    const amb = norm(pega(r, 'ambiente'));
+    const emb = norm(pega(r, 'embarca'));
+    porMat.set(matricula, {
+      empresa_id: empresa?.id, matricula, nome,
+      cargo: pega(r, 'cargo') || null,
+      ambiente: amb ? (/off|embarc|bordo|mar/.test(amb) ? 'offshore' : 'onshore') : padraoAmb,
+      embarca: ['sim', 's', 'x', 'true', '1', 'yes', 'y'].includes(emb),
+    });
+  }
+  return [...porMat.values()];
+}
+
+function desenharPrevia() {
+  const box = $('imp-previa');
+  const opcoes = (sel) => `<option value="-1"${sel < 0 ? ' selected' : ''}>(não importar)</option>` + imp.cabecalho.map((c, i) => `<option value="${i}"${sel === i ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  const regs = registrosImportacao();
+  const amostra = regs.slice(0, 8).map((x) => `<tr>${td(x.matricula)}${td(x.nome)}${td(x.cargo || '—')}${td(x.ambiente + (x.embarca ? ' · embarca' : ''))}</tr>`).join('');
+  box.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+      ${CAMPOS.map(([campo, rotulo]) => `<label class="field lbl" style="display:flex;flex-direction:column;gap:6px">${rotulo}<select data-campo="${campo}">${opcoes(imp.mapa[campo])}</select></label>`).join('')}
+    </div>
+    ${tabela(['Matrícula', 'Nome', 'Cargo', 'Ambiente'], amostra)}
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+      <button class="btn g" id="imp-gravar"${regs.length ? '' : ' disabled'}>Importar ${regs.length} colaboradores</button>
+      <span class="lbl" style="text-transform:none;letter-spacing:0;color:var(--text-muted)">${imp.dados.length - regs.length > 0 ? `${imp.dados.length - regs.length} linhas sem matrícula ou nome serão ignoradas. ` : ''}Matrícula repetida atualiza o cadastro existente.</span>
+    </div>`;
+  box.querySelectorAll('[data-campo]').forEach((s) => { s.onchange = () => { imp.mapa[s.dataset.campo] = Number(s.value); desenharPrevia(); }; });
+  $('imp-empresa').onchange = desenharPrevia;
+  $('imp-gravar').onclick = gravarImportacao;
+}
+
+async function gravarImportacao() {
+  const regs = registrosImportacao();
+  if (!regs.length) return impMsg('Nada para importar: falta a coluna de matrícula ou de nome.', true);
+  const btn = $('imp-gravar'); btn.disabled = true; btn.textContent = 'Importando…';
+  for (let i = 0; i < regs.length; i += 500) {
+    const { error } = await sb.from('colaboradores').upsert(regs.slice(i, i + 500), { onConflict: 'empresa_id,matricula' });
+    if (error) { btn.disabled = false; btn.textContent = `Importar ${regs.length} colaboradores`; return impMsg('Erro ao importar: ' + error.message, true); }
+  }
+  imp = null;
   estado.msg = `${regs.length} colaboradores importados.`; renderCadastros();
 }
 
