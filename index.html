@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NeoRadar | Timesheet</title>
+  <meta name="description" content="NeoRadar Timesheet – ponto eletrônico onshore e offshore.">
+  <meta name="theme-color" content="#0a1324">
+  <link rel="icon" type="image/png" href="/img/favicon-64.png">
+  <link rel="apple-touch-icon" href="/img/neoradar-apple.png">
+  <meta name="apple-mobile-web-app-title" content="Timesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:wght@400;700&family=Instrument+Sans:wght@400;700&family=DM+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="modulepreload" href="/lib/@supabase/supabase-js@2.49.4/index.esm.js" crossorigin>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><polygon points="15,1.5 27,8.25 27,21.75 15,28.5 3,21.75 3,8.25" fill="none" stroke="#b0bed0" stroke-width="1.4"></polygon><path d="M10 21V9M20 21V9" stroke="#3480c8" stroke-width="3"></path><path d="M10.5 9.5L19.5 20.5" stroke="#16aa7a" stroke-width="2"></path></svg>
+      <h1><span style="font-weight:400;color:#16aa7a">Neo</span>Radar</h1>
+      <span class="sep"></span>
+      <span class="prod">TIMESHEET</span>
+    </div>
+    <div class="grow"></div>
+    <span id="unidade-selo" class="b">Sayan Polaris</span>
+    <span id="perfil-selo" class="b">Carregando…</span>
+    <a href="/sayan-polaris" class="lbl" style="color:#60a8e8">‹ Módulos</a>
+  </header>
+
+  <div class="layout">
+    <nav class="side" id="nav" aria-label="Menu do Timesheet"></nav>
+    <main class="content" id="conteudo" aria-live="polite">
+      <div class="hd"><div class="lbl">Carregando</div><h2>Timesheet</h2></div>
+    </main>
+  </div>
+
+  <dialog id="dlg-empresa">
+    <form method="dialog" class="dlg">
+      <h2 style="font-size:26px">Cadastrar empresa</h2>
+      <label class="field lbl">Nome da empresa<input name="nome" required minlength="2" placeholder="Nome da empresa"></label>
+      <label class="field lbl">Ambiente
+        <select name="ambiente"><option value="misto">Onshore e offshore</option><option value="offshore">Offshore</option><option value="onshore">Onshore</option></select>
+      </label>
+      <p class="lbl" id="dlg-erro" style="color:#ff8a83;display:none"></p>
+      <div class="row-actions"><button value="cancel" class="btn" type="submit">Cancelar</button><button value="ok" class="btn g" type="submit" id="dlg-salvar">Salvar empresa</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
