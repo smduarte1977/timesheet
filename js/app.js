@@ -8,7 +8,7 @@ const cfg = { central, local: sb, modulo: 'timesheet', localUrl: SUPABASE_URL, l
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-const estado = { email: null, master: false, view: 'inicio', cad: 'empresas', empresas: [], msg: '' };
+const estado = { email: null, master: false, view: 'inicio', cad: 'empresas', ficha: null, empresas: [], msg: '' };
 
 const SECOES = [
   ['inicio', 'Início'],
@@ -150,7 +150,7 @@ async function renderCadastros() {
   const abas = [['empresas', 'Empresas'], ['colaboradores', 'Colaboradores'], ['estabelecimentos', 'Unidades'], ['dispositivos', 'Dispositivos']];
   const barra = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px">${abas.map(([k, l]) => `<button class="btn${estado.cad === k ? ' p' : ''}" data-cad="${k}">${l}</button>`).join('')}</div>`;
   c.innerHTML = cab('Cadastros', 'Base da empresa', 'Comece pela empresa; o resto se liga a ela.') + bannerMsg() + barra + '<div id="cad-corpo"></div>';
-  c.querySelectorAll('[data-cad]').forEach((b) => { b.onclick = () => { estado.cad = b.dataset.cad; estado.msg = ''; renderCadastros(); }; });
+  c.querySelectorAll('[data-cad]').forEach((b) => { b.onclick = () => { estado.cad = b.dataset.cad; estado.ficha = null; estado.msg = ''; renderCadastros(); }; });
   const corpo = $('cad-corpo');
 
   const { data: empresas } = await sb.from('empresas').select('id,nome,ambiente,ativa').order('nome');
@@ -199,27 +199,51 @@ function cadEmpresas(corpo) {
   };
 }
 
-/* Colaboradores + importação CSV */
+/* Colaboradores: lista consultável, ficha completa e importação */
+const FICHA = [
+  ['Identificação', [['nome', 'Nome'], ['matricula', 'Matrícula'], ['cpf', 'CPF'], ['pis', 'PIS'], ['nascimento', 'Nascimento', 'data']]],
+  ['Contato', [['email', 'E-mail'], ['celular', 'Celular'], ['telefone', 'Telefone']]],
+  ['Endereço', [['logradouro', 'Logradouro'], ['numero', 'Número'], ['complemento', 'Complemento'], ['bairro', 'Bairro'], ['cidade', 'Cidade'], ['estado', 'Estado'], ['cep', 'CEP']]],
+  ['Vínculo', [['status', 'Status', 'status'], ['admissao', 'Admissão', 'data'], ['desligamento', 'Desligamento', 'data'], ['cargo', 'Cargo'], ['departamento', 'Departamento'], ['escala', 'Escala'], ['empresa_origem', 'Empresa (origem)'], ['categoria_trabalhador', 'Categoria de trabalhador'], ['perimetro_padrao', 'Perímetro padrão'], ['ambiente', 'Ambiente', 'ambiente'], ['embarca', 'Embarca', 'bool']]],
+  ['Observações', [['observacoes', 'Observações', 'texto']]],
+];
+const dataBR = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '');
+const seloStatus = (st) => `<span class="b${st === 'Ativo' ? ' ok' : st === 'Demitido' ? '' : ''}">${esc(st || '—')}</span>`;
+const filtroCol = { busca: '', status: 'Ativo' };
+
 async function cadColaboradores(corpo) {
-  const { data } = await sb.from('colaboradores').select('matricula,nome,cargo,ambiente,embarca,empresa_id').order('nome').limit(500);
+  if (estado.ficha) return fichaColaborador(corpo, estado.ficha, false);
+  const { data } = await sb.from('colaboradores').select('*').order('nome').limit(2000);
+  const todos = data || [];
   const nomeEmp = Object.fromEntries(estado.empresas.map((e) => [e.id, e.nome]));
-  const linhas = (data || []).map((x) => `<tr>${td(x.matricula)}${td(x.nome)}${td(x.cargo || '—')}${td(x.ambiente + (x.embarca ? ' · embarca' : ''))}${td(nomeEmp[x.empresa_id] || '')}</tr>`).join('');
+  const n = (st) => todos.filter((x) => (st === 'Todos' ? true : (x.status || 'Ativo') === st)).length;
   corpo.innerHTML = `
-    <div class="card" style="margin-bottom:16px"><h3 style="font-size:20px;margin-bottom:12px">Novo colaborador</h3>
+    <div class="card" style="margin-bottom:16px">
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Empresa${selEmpresa()}</label>
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Matrícula<input id="f-mat" style="width:110px"></label>
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px;flex:1 1 200px">Nome<input id="f-nome"></label>
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Cargo<input id="f-cargo" style="width:140px"></label>
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Ambiente<select id="f-amb"><option value="onshore">Onshore</option><option value="offshore">Offshore</option></select></label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:14px;min-height:40px"><input type="checkbox" id="f-emb" style="width:18px;height:18px">Embarca</label>
-        <button class="btn g" id="f-salvar">Salvar</button>
-      </div><p id="f-erro" class="lbl" style="color:#ff8a83;display:none;margin:10px 0 0"></p>
+        <label class="field lbl" style="flex:1 1 260px">Buscar<input id="c-busca" placeholder="Nome, matrícula, CPF, cargo ou cidade" value="${esc(filtroCol.busca)}"></label>
+        <label class="field lbl">Situação<select id="c-status">
+          ${[['Ativo', 'Ativos'], ['Demitido', 'Demitidos'], ['Todos', 'Todos']].map(([v, r]) => `<option value="${v}"${filtroCol.status === v ? ' selected' : ''}>${r} (${n(v)})</option>`).join('')}
+        </select></label>
+        <button class="btn" id="c-novo-btn">Novo colaborador</button>
+        <button class="btn" id="c-imp-btn">Importar dados</button>
+      </div>
     </div>
-    <div class="card" style="margin-bottom:16px"><h3 style="font-size:20px;margin-bottom:8px">Importar dados</h3>
-      <p class="lbl" style="text-transform:none;letter-spacing:0;color:var(--text-muted);margin:0 0 10px">Envie a planilha (Excel ou CSV) ou cole as linhas copiadas do Excel/Google Sheets. O sistema reconhece as colunas sozinho e mostra uma prévia antes de gravar.</p>
+    <div class="card" id="c-novo" style="margin-bottom:16px;display:none"><h3 style="font-size:20px;margin-bottom:12px">Novo colaborador</h3>
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
-        <label class="field lbl" style="display:flex;flex-direction:column;gap:6px">Empresa dos dados${selEmpresa('imp-empresa')}</label>
+        <label class="field lbl">Empresa${selEmpresa()}</label>
+        <label class="field lbl">Matrícula<input id="f-mat" style="width:110px"></label>
+        <label class="field lbl" style="flex:1 1 200px">Nome<input id="f-nome"></label>
+        <label class="field lbl">Cargo<input id="f-cargo" style="width:160px"></label>
+        <label class="field lbl">Ambiente<select id="f-amb"><option value="offshore">Offshore</option><option value="onshore">Onshore</option></select></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:14px;min-height:40px"><input type="checkbox" id="f-emb" checked style="width:18px;height:18px">Embarca</label>
+        <button class="btn g" id="f-salvar">Salvar</button>
+      </div><p class="lbl" style="text-transform:none;letter-spacing:0;margin:10px 0 0">Depois de salvar, abra a ficha para completar CPF, contato, endereço e vínculo.</p>
+      <p id="f-erro" class="lbl" style="color:#ff8a83;display:none;margin:10px 0 0"></p>
+    </div>
+    <div class="card" id="c-imp" style="margin-bottom:16px;display:none"><h3 style="font-size:20px;margin-bottom:8px">Importar dados</h3>
+      <p class="lbl" style="text-transform:none;letter-spacing:0;color:var(--text-muted);margin:0 0 10px">Envie a planilha (Excel ou CSV) ou cole as linhas copiadas do Excel/Google Sheets. O sistema reconhece as colunas sozinho (matrícula ou PIN, nome, CPF, PIS, contato, endereço, admissão, status, cargo, escala…) e mostra uma prévia antes de gravar. Matrícula repetida atualiza a ficha existente.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+        <label class="field lbl">Empresa dos dados${selEmpresa('imp-empresa')}</label>
         <label class="btn" style="display:inline-flex;align-items:center;cursor:pointer">Escolher planilha<input type="file" id="imp-arquivo" accept=".xlsx,.xls,.csv,.txt" style="display:none"></label>
         <button class="btn" id="imp-colar-btn">Colar dados</button>
         <button class="btn" id="f-baixar">Baixar modelo</button>
@@ -231,18 +255,97 @@ async function cadColaboradores(corpo) {
       <p id="csv-msg" class="lbl" style="text-transform:none;letter-spacing:0;display:none;margin:10px 0 0"></p>
       <div id="imp-previa" style="margin-top:12px"></div>
     </div>
-    ${tabela(['Matrícula', 'Nome', 'Cargo', 'Ambiente', 'Empresa'], linhas)}`;
+    <p class="lbl" id="c-conta" style="margin:0 0 8px"></p>
+    <div id="c-lista"></div>`;
+
+  const desenhar = () => {
+    const q = norm(filtroCol.busca);
+    const lista = todos.filter((x) => (filtroCol.status === 'Todos' || (x.status || 'Ativo') === filtroCol.status)
+      && (!q || [x.nome, x.matricula, x.cpf, x.cargo, x.cidade, x.departamento, x.email].some((v) => norm(v).includes(q))));
+    $('c-conta').textContent = `${lista.length} de ${todos.length} colaboradores`;
+    const linhas = lista.map((x) => `<tr class="lin" data-id="${esc(x.id)}" style="cursor:pointer">
+      ${tdm(x.matricula || '—')}<td style="padding:10px 12px;border-top:1px solid var(--line)"><a href="#" data-id="${esc(x.id)}">${esc(x.nome)}</a></td>
+      ${tdm(x.cpf || '—')}${td(x.cargo || '—')}${td(x.departamento || '—')}${td(x.cidade || '—')}
+      ${tdm(dataBR(x.admissao) || '—')}<td style="padding:10px 12px;border-top:1px solid var(--line)">${seloStatus(x.status)}</td>
+      ${td((x.ambiente || '') + (x.embarca ? ' · embarca' : ''))}${td(nomeEmp[x.empresa_id] || '')}</tr>`).join('');
+    $('c-lista').innerHTML = tabela(['Matrícula', 'Nome', 'CPF', 'Cargo', 'Departamento', 'Cidade', 'Admissão', 'Status', 'Ambiente', 'Empresa'], linhas);
+    $('c-lista').querySelectorAll('tr.lin').forEach((tr) => { tr.onclick = (e) => { e.preventDefault(); estado.ficha = tr.dataset.id; renderCadastros(); }; });
+  };
+  desenhar();
+  $('c-busca').oninput = (e) => { filtroCol.busca = e.target.value; desenhar(); };
+  $('c-status').onchange = (e) => { filtroCol.status = e.target.value; desenhar(); };
+  const alterna = (id) => { const b = $(id); b.style.display = b.style.display === 'none' ? 'block' : 'none'; };
+  $('c-novo-btn').onclick = () => alterna('c-novo');
+  $('c-imp-btn').onclick = () => alterna('c-imp');
   $('f-salvar').onclick = async () => {
     const empresa_id = $('f-empresa').value, matricula = $('f-mat').value.trim(), nome = $('f-nome').value.trim();
     if (!matricula || nome.length < 2) return erroCampo('Matrícula e nome são obrigatórios.');
-    const { error } = await sb.from('colaboradores').insert({ empresa_id, matricula, nome, cargo: $('f-cargo').value.trim() || null, ambiente: $('f-amb').value, embarca: $('f-emb').checked });
+    const { data: novo, error } = await sb.from('colaboradores').insert({ empresa_id, matricula, nome, cargo: $('f-cargo').value.trim() || null, ambiente: $('f-amb').value, embarca: $('f-emb').checked }).select('id').single();
     if (error) return erroCampo('Não foi possível salvar: ' + error.message);
-    estado.msg = 'Colaborador cadastrado.'; renderCadastros();
+    estado.msg = 'Colaborador cadastrado. Complete a ficha.'; estado.ficha = novo.id; renderCadastros();
   };
   $('f-baixar').onclick = baixarModelo;
   $('imp-arquivo').onchange = (e) => lerArquivo(e.target.files[0]);
   $('imp-colar-btn').onclick = () => { const b = $('imp-colar'); b.style.display = b.style.display === 'none' ? 'block' : 'none'; if (b.style.display === 'block') $('imp-texto').focus(); };
   $('imp-ler').onclick = () => { const t = $('imp-texto').value; if (!t.trim()) return impMsg('Cole as linhas da planilha primeiro.', true); prepararImportacao(lerTexto(t)); };
+}
+const tdm = (s) => `<td class="mono" style="padding:10px 12px;border-top:1px solid var(--line);font-size:13px;white-space:nowrap">${esc(s)}</td>`;
+
+async function fichaColaborador(corpo, id, editando) {
+  const { data: x, error } = await sb.from('colaboradores').select('*').eq('id', id).maybeSingle();
+  if (error || !x) { estado.ficha = null; estado.msg = ''; return renderCadastros(); }
+  const nomeEmp = (estado.empresas.find((e) => e.id === x.empresa_id) || {}).nome || '';
+  const valor = (k, tipo) => {
+    const v = x[k];
+    if (tipo === 'data') return dataBR(v);
+    if (tipo === 'bool') return v ? 'Sim' : 'Não';
+    return v ?? '';
+  };
+  const campoEdit = (k, tipo) => {
+    const v = x[k];
+    if (tipo === 'data') return `<input type="date" data-k="${k}" value="${esc(v ? String(v).slice(0, 10) : '')}">`;
+    if (tipo === 'bool') return `<select data-k="${k}" data-t="bool"><option value="1"${v ? ' selected' : ''}>Sim</option><option value="0"${v ? '' : ' selected'}>Não</option></select>`;
+    if (tipo === 'status') return `<select data-k="${k}">${['Ativo', 'Afastado', 'Férias', 'Demitido'].map((o) => `<option${v === o ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
+    if (tipo === 'ambiente') return `<select data-k="${k}"><option value="offshore"${v === 'offshore' ? ' selected' : ''}>Offshore</option><option value="onshore"${v === 'onshore' ? ' selected' : ''}>Onshore</option></select>`;
+    if (tipo === 'texto') return `<textarea data-k="${k}" rows="3" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--text);padding:10px;font:400 14px var(--font-sans)">${esc(v ?? '')}</textarea>`;
+    return `<input data-k="${k}" value="${esc(v ?? '')}">`;
+  };
+  const grupos = FICHA.map(([titulo, campos]) => `
+    <div class="card" style="margin-bottom:16px"><h3 style="font-size:20px;margin-bottom:14px">${titulo}</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(${titulo === 'Observações' ? '100%' : '200px'},1fr));gap:14px 20px">
+        ${campos.map(([k, rot, tipo]) => `<div style="display:flex;flex-direction:column;gap:4px"><span class="lbl">${rot}</span>
+          ${editando ? campoEdit(k, tipo) : `<span${['matricula', 'cpf', 'pis', 'cep', 'celular', 'telefone', 'nascimento', 'admissao', 'desligamento'].includes(k) ? ' class="mono"' : ''} style="min-height:22px">${tipo === 'status' ? seloStatus(x[k]) : esc(valor(k, tipo)) || '<span style="color:var(--text-muted)">—</span>'}</span>`}
+        </div>`).join('')}
+      </div></div>`).join('');
+  corpo.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px">
+      <button class="btn" id="fx-voltar">← Voltar à lista</button>
+      <div class="grow"></div>
+      ${editando ? '<button class="btn" id="fx-cancelar">Cancelar</button><button class="btn g" id="fx-salvar">Salvar ficha</button>' : '<button class="btn p" id="fx-editar">Editar ficha</button>'}
+    </div>
+    <div class="card" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+      <div style="flex:1 1 300px"><div class="lbl">Ficha do colaborador · ${esc(nomeEmp)}</div>
+        <h2 style="font-size:32px;line-height:1.1;margin-top:4px">${esc(x.nome)}</h2>
+        <div style="color:var(--text-muted);margin-top:4px">${esc([x.cargo, x.departamento].filter(Boolean).join(' · '))}</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${seloStatus(x.status)}<span class="b">${esc(x.ambiente || '')}</span>${x.embarca ? '<span class="b">Embarca</span>' : ''}</div>
+    </div>
+    <p id="fx-erro" class="lbl" style="color:#ff8a83;display:none;margin:0 0 12px"></p>
+    ${grupos}
+    <p class="lbl" style="text-transform:none;letter-spacing:0">Atualizado em ${esc(x.atualizado_em ? new Date(x.atualizado_em).toLocaleString('pt-BR') : '—')}</p>`;
+  $('fx-voltar').onclick = () => { estado.ficha = null; renderCadastros(); };
+  if (!editando) { $('fx-editar').onclick = () => fichaColaborador(corpo, id, true); return; }
+  $('fx-cancelar').onclick = () => fichaColaborador(corpo, id, false);
+  $('fx-salvar').onclick = async () => {
+    const upd = { atualizado_em: new Date().toISOString() };
+    corpo.querySelectorAll('[data-k]').forEach((el) => {
+      const v = el.value.trim();
+      upd[el.dataset.k] = el.dataset.t === 'bool' ? v === '1' : (v || null);
+    });
+    if (!upd.nome || upd.nome.length < 2) { const e = $('fx-erro'); e.textContent = 'O nome é obrigatório.'; e.style.display = 'block'; return; }
+    const { error: er } = await sb.from('colaboradores').update(upd).eq('id', id);
+    if (er) { const e = $('fx-erro'); e.textContent = 'Não foi possível salvar: ' + er.message; e.style.display = 'block'; return; }
+    estado.msg = 'Ficha atualizada.'; fichaColaborador(corpo, id, false);
+  };
 }
 
 function baixarModelo() {
@@ -255,12 +358,45 @@ function baixarModelo() {
 /* ---------- Importação inteligente (Excel, CSV ou colado) ---------- */
 
 const CAMPOS = [
-  ['matricula', 'Matrícula', ['matricula', 'matr', 'mat', 'registro', 'chapa', 're', 'codigo', 'cod', 'cracha', 'idfuncionario', 'numero']],
+  ['matricula', 'Matrícula', ['matricula', 'matr', 'mat', 'pin', 'registro', 'chapa', 're', 'codigo', 'cod', 'cracha', 'idfuncionario']],
   ['nome', 'Nome', ['nome', 'nomecompleto', 'colaborador', 'funcionario', 'empregado', 'tripulante', 'name', 'pessoa', 'trabalhador']],
+  ['cpf', 'CPF', ['cpf']],
+  ['pis', 'PIS', ['pis', 'pispasep', 'nis', 'nit']],
+  ['nascimento', 'Nascimento', ['nascimento', 'datanascimento', 'dtnascimento', 'dtnasc', 'datadenascimento']],
+  ['email', 'E-mail', ['email', 'correioeletronico']],
+  ['celular', 'Celular', ['celular', 'cel', 'whatsapp', 'movel']],
+  ['telefone', 'Telefone', ['telefone', 'tel', 'fone']],
+  ['logradouro', 'Logradouro', ['logradouro', 'endereco', 'rua']],
+  ['numero', 'Número', ['numero', 'num', 'nro']],
+  ['complemento', 'Complemento', ['complemento', 'compl']],
+  ['bairro', 'Bairro', ['bairro']],
+  ['cidade', 'Cidade', ['cidade', 'municipio']],
+  ['estado', 'Estado', ['estado', 'uf']],
+  ['cep', 'CEP', ['cep']],
+  ['status', 'Status', ['status', 'situacao']],
+  ['admissao', 'Admissão', ['admissao', 'dataadmissao', 'dtadmissao', 'datadeadmissao']],
+  ['desligamento', 'Desligamento', ['desligamento', 'demissao', 'datadesligamento', 'datademissao']],
   ['cargo', 'Cargo', ['cargo', 'funcao', 'ocupacao', 'posicao', 'role', 'function', 'atividade']],
+  ['departamento', 'Departamento', ['departamento', 'setor', 'lotacao', 'area']],
+  ['escala', 'Escala', ['escala', 'turno', 'jornada']],
+  ['empresa_origem', 'Empresa (origem)', ['empresa', 'razaosocial', 'empregador']],
+  ['categoria_trabalhador', 'Categoria', ['categoria', 'categoriadetrabalhador', 'categoriatrabalhador']],
+  ['perimetro_padrao', 'Perímetro', ['perimetro', 'perimetropadrao']],
+  ['observacoes', 'Observações', ['observacoes', 'observacao', 'obs']],
   ['ambiente', 'Ambiente', ['ambiente', 'regime', 'onshoreoffshore', 'onoff', 'localtrabalho']],
-  ['embarca', 'Embarca', ['embarca', 'embarcado', 'embarque', 'aBordo', 'abordo']],
+  ['embarca', 'Embarca', ['embarca', 'embarcado', 'embarque', 'abordo']],
 ];
+const CAMPOS_DATA = ['nascimento', 'admissao', 'desligamento'];
+function dataISO(v) {
+  v = String(v || '').trim();
+  if (!v || v === '--') return null;
+  let m = v.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = v.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
+  if (!m) return null;
+  const ano = m[3].length === 2 ? (Number(m[3]) > 40 ? '19' : '20') + m[3] : m[3];
+  return `${ano}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+}
 let imp = null; // { linhas, cabecalho, mapa }
 
 const norm = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -295,7 +431,7 @@ async function lerArquivo(file) {
       if (!window.XLSX) return impMsg('Leitor de Excel não carregou. Recarregue a página.', true);
       const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      linhas = window.XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }).map((r) => r.map((c) => String(c ?? '').trim()));
+      linhas = window.XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', dateNF: 'dd/mm/yyyy' }).map((r) => r.map((c) => String(c ?? '').trim()));
     }
     prepararImportacao(linhas.filter((r) => r.some((c) => c !== '')));
   } catch (e) {
@@ -339,20 +475,23 @@ function prepararImportacao(linhas) {
 function registrosImportacao() {
   const empresa = estado.empresas.find((e) => e.id === $('imp-empresa').value);
   const padraoAmb = empresa && empresa.ambiente === 'offshore' ? 'offshore' : 'onshore';
-  const pega = (r, campo) => (imp.mapa[campo] >= 0 ? String(r[imp.mapa[campo]] ?? '').trim() : '');
+  const pega = (r, campo) => { const v = imp.mapa[campo] >= 0 ? String(r[imp.mapa[campo]] ?? '').trim() : ''; return v === '--' ? '' : v; };
+  const extras = CAMPOS.map(([c]) => c).filter((c) => !['matricula', 'nome', 'ambiente', 'embarca'].includes(c) && imp.mapa[c] >= 0);
   const porMat = new Map();
   for (const r of imp.dados) {
-    let matricula = pega(r, 'matricula').replace(/\.0+$/, '');
+    const matricula = pega(r, 'matricula').replace(/\.0+$/, '');
     const nome = pega(r, 'nome');
     if (!matricula || nome.length < 2) continue;
     const amb = norm(pega(r, 'ambiente'));
     const emb = norm(pega(r, 'embarca'));
-    porMat.set(matricula, {
+    const reg = {
       empresa_id: empresa?.id, matricula, nome,
-      cargo: pega(r, 'cargo') || null,
       ambiente: amb ? (/off|embarc|bordo|mar/.test(amb) ? 'offshore' : 'onshore') : padraoAmb,
-      embarca: ['sim', 's', 'x', 'true', '1', 'yes', 'y'].includes(emb),
-    });
+      embarca: emb ? ['sim', 's', 'x', 'true', '1', 'yes', 'y'].includes(emb) : padraoAmb === 'offshore',
+      atualizado_em: new Date().toISOString(),
+    };
+    for (const c of extras) { const v = pega(r, c); reg[c] = CAMPOS_DATA.includes(c) ? dataISO(v) : (v || null); }
+    porMat.set(matricula, reg);
   }
   return [...porMat.values()];
 }
@@ -361,12 +500,14 @@ function desenharPrevia() {
   const box = $('imp-previa');
   const opcoes = (sel) => `<option value="-1"${sel < 0 ? ' selected' : ''}>(não importar)</option>` + imp.cabecalho.map((c, i) => `<option value="${i}"${sel === i ? ' selected' : ''}>${esc(c)}</option>`).join('');
   const regs = registrosImportacao();
-  const amostra = regs.slice(0, 8).map((x) => `<tr>${td(x.matricula)}${td(x.nome)}${td(x.cargo || '—')}${td(x.ambiente + (x.embarca ? ' · embarca' : ''))}</tr>`).join('');
+  const reconhecidas = CAMPOS.filter(([c]) => imp.mapa[c] >= 0).length;
+  const amostra = regs.slice(0, 8).map((x) => `<tr>${td(x.matricula)}${td(x.nome)}${td(x.cpf || '—')}${td(x.cargo || '—')}${td(x.status || '—')}${td(x.ambiente + (x.embarca ? ' · embarca' : ''))}</tr>`).join('');
   box.innerHTML = `
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">
-      ${CAMPOS.map(([campo, rotulo]) => `<label class="field lbl" style="display:flex;flex-direction:column;gap:6px">${rotulo}<select data-campo="${campo}">${opcoes(imp.mapa[campo])}</select></label>`).join('')}
+      ${CAMPOS.map(([campo, rotulo]) => `<label class="field lbl" style="display:flex;flex-direction:column;gap:6px;${imp.mapa[campo] >= 0 ? '' : 'opacity:.55'}">${rotulo}<select data-campo="${campo}">${opcoes(imp.mapa[campo])}</select></label>`).join('')}
     </div>
-    ${tabela(['Matrícula', 'Nome', 'Cargo', 'Ambiente'], amostra)}
+    <p class="lbl" style="margin:0 0 8px">${reconhecidas} colunas reconhecidas de ${imp.cabecalho.length}</p>
+    ${tabela(['Matrícula', 'Nome', 'CPF', 'Cargo', 'Status', 'Ambiente'], amostra)}
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
       <button class="btn g" id="imp-gravar"${regs.length ? '' : ' disabled'}>Importar ${regs.length} colaboradores</button>
       <span class="lbl" style="text-transform:none;letter-spacing:0;color:var(--text-muted)">${imp.dados.length - regs.length > 0 ? `${imp.dados.length - regs.length} linhas sem matrícula ou nome serão ignoradas. ` : ''}Matrícula repetida atualiza o cadastro existente.</span>
